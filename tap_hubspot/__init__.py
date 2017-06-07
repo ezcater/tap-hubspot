@@ -79,6 +79,8 @@ ENDPOINTS = {
     "workflows":            "/automation/v3/workflows",
     "keywords":             "/keywords/v1/keywords",
     "owners":               "/owners/v2/owners",
+
+    "blogs":                "/content/api/v2/blogs",
 }
 
 
@@ -531,6 +533,20 @@ def sync_owners():
 
     singer.write_state(STATE)
 
+def sync_blogs():
+    schema = load_schema("blogs")
+    singer.write_schema("blogs", schema, ["id"])
+    start = get_start("blogs")
+
+    data = request(get_url("blogs")).json()
+    for row in data["objects"]:
+        record = xform(row, schema)
+        if record['updated'] >= start:
+            singer.write_record("blogs", record)
+            utils.update_state(STATE, "blogs", record['updated'])
+
+    singer.write_state(STATE)
+
 @attr.s
 class Stream(object):
     name = attr.ib()
@@ -552,7 +568,8 @@ STREAMS = [
     Stream('contact_lists', sync_contact_lists, ["internalListId"]),
     Stream('contacts', sync_contacts, ["canonical-vid"]),
     Stream('companies', sync_companies, ["companyId"]),
-    Stream('deals', sync_deals, ["portalId", "dealId"])
+    Stream('deals', sync_deals, ["portalId", "dealId"]),
+    Stream('blogs', sync_blogs, ["id"])
 ]
 
 def get_streams_to_sync(streams, state):
