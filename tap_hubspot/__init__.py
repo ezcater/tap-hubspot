@@ -80,6 +80,7 @@ ENDPOINTS = {
     "subscription_changes": "/email/public/v1/subscriptions/timeline",
     "email_events":         "/email/public/v1/events",
     "contact_lists":        "/contacts/v1/lists",
+    "list_contacts":        "/contacts/v1/lists/{list_id}/contacts/all",
     "forms":                "/forms/v2/forms",
     "workflows":            "/automation/v3/workflows",
     "keywords":             "/keywords/v1/keywords",
@@ -303,6 +304,28 @@ def _sync_contact_vids(catalog, vids, schema, bumble_bee):
         record = bumble_bee.transform(record, schema)
         singer.write_record("contacts", record, catalog.get('stream_alias'))
 
+def _sync_list_contacts(STATE, catalog, list_id, bumble_bee):
+    schema = load_schema("contacts")
+    singer.write_schema("contacts", schema, ["vid"], catalog.get('stream_alias'))
+
+    # get vids for list using /contacts/v1/lists/:list_id/contacts/all
+    # https://developers.hubspot.com/docs/methods/lists/get_list_contacts
+    params = {'count': 100}
+    url = get_url("list_contacts", list_id=list_id)
+    vids = []
+    for row in gen_request(STATE, 'contacts', url, params, 'contacts', 'has-more', ['vid-offset'], ['vidOffset']): 
+        # collect vids and sync
+        LOGGER.info("LIST: {} VID: {}".format(list_id, row['vid']))
+        vids.append(row['vid'])
+
+        if len(vids) == 100:
+            LOGGER.info("syncing batch of 100 vids")
+            _sync_contact_vids(catalog, vids, schema, bumble_bee)
+            vids = []
+
+    _sync_contact_vids(catalog, vids, schema, bumble_bee)
+
+
 default_contact_params = {
     'showListMemberships': True,
     'count': 100,
@@ -467,7 +490,6 @@ def sync_campaigns(STATE, catalog):
 
     return STATE
 
-
 def sync_entity_chunked(STATE, catalog, entity_name, key_properties, path):
     schema = load_schema(entity_name)
     singer.write_schema(entity_name, schema, key_properties, catalog.get('stream_alias'))
@@ -536,14 +558,21 @@ def sync_contact_lists(STATE, catalog):
 
     url = get_url("contact_lists")
     params = {'count': 250}
+    list_ids = []
     with Transformer(UNIX_MILLISECONDS_INTEGER_DATETIME_PARSING) as bumble_bee:
         for row in gen_request(STATE, 'contact_lists', url, params, "lists", "has-more", ["offset"], ["offset"]):
             record = bumble_bee.transform(row, schema)
 
             if record['updatedAt'] >= start:
+                list_ids.append(row['listId'])
                 singer.write_record("contact_lists", record, catalog.get('stream_alias'))
             if record['updatedAt'] >= max_bk_value:
                 max_bk_value = record['updatedAt']
+        
+        LOGGER.warn("{} lists to sync: {}".format(len(list_ids), list_ids))
+        for list_id in list_ids:
+            LOGGER.warn("prepping to sync list id {}".format(list_id))
+            _sync_list_contacts(STATE, catalog, list_id, bumble_bee)
 
     STATE = singer.write_bookmark(STATE, 'contact_lists', 'updatedAt', max_bk_value)
     singer.write_state(STATE)
